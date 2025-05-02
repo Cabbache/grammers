@@ -12,6 +12,7 @@ use grammers_crypto::two_factor_auth::{calculate_2fa, check_p_and_g};
 use grammers_mtsender::InvocationError;
 use grammers_session::types::{PeerInfo, UpdateState, UpdatesState};
 use grammers_tl_types as tl;
+use grammers_tl_types::functions::auth::{ExportLoginToken, ImportLoginToken};
 
 use super::Client;
 use crate::peer::User;
@@ -291,6 +292,42 @@ impl Client {
             phone: phone.to_string(),
             phone_code_hash: sent_code.phone_code_hash,
         })
+    }
+
+    /// Returns a QR login code OR authenticates after QR code is scanned
+    ///
+    /// You can call [`Client::request_qr_code`] to obtain
+    /// the necessary login token to display the QR code and you
+    /// have to call it again after the QR code is scanned.
+    ///
+    /// It is recommended to save the [`Client::session()`] in between calls to this function
+    pub async fn request_qr_code(
+        &self,
+        api_hash: &str,
+    ) -> Result<grammers_tl_types::enums::auth::LoginToken, InvocationError> {
+        let export_login_token = ExportLoginToken {
+            api_id: self.0.api_id,
+            api_hash: api_hash.to_string(),
+            except_ids: Vec::new(),
+        };
+
+        let mut response = self.invoke(&export_login_token).await?;
+        if let grammers_tl_types::enums::auth::LoginToken::MigrateTo(ref migrateto) = response {
+            let import_login_token = ImportLoginToken {
+                token: migrateto.token.clone(),
+            };
+            let dc_id = migrateto.dc_id;
+            let second_response = self.invoke_in_dc(dc_id, &import_login_token).await?;
+            if matches!(
+                second_response,
+                grammers_tl_types::enums::auth::LoginToken::Success(_)
+            ) {
+                response = second_response;
+            } else {
+                return Err(InvocationError::Dropped);
+            }
+        }
+        Ok(response)
     }
 
     /// Signs in to the user account.
